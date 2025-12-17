@@ -60,6 +60,26 @@
             font-size: 1.1em;
         }
         
+        .top-k-section {
+            margin-top: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .top-k-section label {
+            margin: 0;
+            font-size: 1em;
+        }
+        
+        .top-k-section input {
+            width: 80px;
+            padding: 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 1em;
+        }
+        
         textarea {
             width: 100%;
             min-height: 120px;
@@ -239,6 +259,11 @@
                     id="queryInput" 
                     placeholder="Example: I am hiring for Java developers who can also collaborate effectively with my business teams."
                 ></textarea>
+                
+                <div class="top-k-section">
+                    <label for="topKInput">Number of recommendations:</label>
+                    <input type="number" id="topKInput" value="10" min="1" max="20">
+                </div>
             </div>
             
             <div class="button-container">
@@ -262,11 +287,12 @@
     </div>
     
     <script>
-        // Configure API endpoint
-        const API_URL = 'http://localhost:8000';  // Change this to your deployed API URL
+        // Configure API endpoint - UPDATED TO RENDER URL
+        const API_URL = 'https://shl-assessment-recommender-bttc.onrender.com';
         
         async function getRecommendations() {
             const query = document.getElementById('queryInput').value.trim();
+            const topK = parseInt(document.getElementById('topKInput').value) || 10;
             
             if (!query) {
                 showError('Please enter a job description or query');
@@ -284,20 +310,34 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
+                        'Accept': 'application/json'
                     },
-                    body: JSON.stringify({ query: query })
+                    body: JSON.stringify({ 
+                        query: query,
+                        top_k: topK 
+                    })
                 });
                 
                 if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                    const errorText = await response.text();
+                    throw new Error(`HTTP error! status: ${response.status} - ${errorText}`);
                 }
                 
                 const data = await response.json();
-                displayResults(data.recommended_assessments);
+                
+                // Handle both possible response formats
+                const assessments = data.recommendations || data.recommended_assessments;
+                
+                if (!assessments || assessments.length === 0) {
+                    showError('No assessments found. Please try a different query.');
+                    return;
+                }
+                
+                displayResults(assessments);
                 
             } catch (error) {
                 console.error('Error:', error);
-                showError('Failed to get recommendations. Please try again.');
+                showError(`Failed to get recommendations: ${error.message}`);
             } finally {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('recommendBtn').disabled = false;
@@ -308,46 +348,46 @@
             const resultsDiv = document.getElementById('results');
             const listDiv = document.getElementById('assessmentList');
             
-            if (!assessments || assessments.length === 0) {
-                showError('No assessments found. Please try a different query.');
-                return;
-            }
-            
             listDiv.innerHTML = '';
             
             assessments.forEach((assessment, index) => {
                 const card = document.createElement('div');
                 card.className = 'assessment-card';
                 
+                // Handle test_type as array
+                const testTypes = Array.isArray(assessment.test_type) 
+                    ? assessment.test_type 
+                    : [assessment.test_type || 'N/A'];
+                
                 card.innerHTML = `
                     <div class="assessment-title">
-                        ${index + 1}. <a href="${assessment.url}" target="_blank">${assessment.name}</a>
+                        ${index + 1}. <a href="${assessment.url}" target="_blank" rel="noopener noreferrer">${assessment.name}</a>
                     </div>
                     
                     <div class="assessment-meta">
                         <div class="meta-item">
-                            ⏱️ Duration: <strong>${assessment.duration} min</strong>
+                            ⏱️ Duration: <strong>${assessment.duration || 0} min</strong>
                         </div>
                         <div class="meta-item">
                             <span class="badge ${assessment.adaptive_support === 'Yes' ? 'badge-yes' : 'badge-no'}">
-                                Adaptive: ${assessment.adaptive_support}
+                                Adaptive: ${assessment.adaptive_support || 'No'}
                             </span>
                         </div>
                         <div class="meta-item">
                             <span class="badge ${assessment.remote_support === 'Yes' ? 'badge-yes' : 'badge-no'}">
-                                Remote: ${assessment.remote_support}
+                                Remote: ${assessment.remote_support || 'No'}
                             </span>
                         </div>
                     </div>
                     
                     <div>
-                        ${assessment.test_type.map(type => 
+                        ${testTypes.map(type => 
                             `<span class="badge badge-type">${type}</span>`
                         ).join('')}
                     </div>
                     
                     <div class="assessment-description">
-                        ${assessment.description}
+                        ${assessment.description || 'No description available.'}
                     </div>
                 `;
                 
