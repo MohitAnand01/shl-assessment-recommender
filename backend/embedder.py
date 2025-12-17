@@ -1,33 +1,68 @@
 import os
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
 
-
-ASSESSMENTS_PATH = "data/assessments.json"
-INDEX_DIR = "data/faiss_index"
+# Use absolute paths relative to this file's location
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+ASSESSMENTS_PATH = os.path.join(DATA_DIR, "assessments.json")
+INDEX_DIR = os.path.join(DATA_DIR, "faiss_index")
 INDEX_PATH = os.path.join(INDEX_DIR, "index.faiss")
 METADATA_PATH = os.path.join(INDEX_DIR, "metadata.json")
 
+# Try importing SentenceTransformer; if it fails, we are in production (Render)
+try:
+    from sentence_transformers import SentenceTransformer
+    HAS_ST = True
+except ImportError:
+    SentenceTransformer = None  # type: ignore
+    HAS_ST = False
 
 class Embedder:
     """
     Handles:
-      - Creating rich text representations for assessments
-      - Building a FAISS index
-      - Loading the index + metadata
+      - Creating rich text representations for assessments (local only)
+      - Building a FAISS index (local only)
+      - Loading the index + metadata (local and Render)
       - Searching for similar assessments
     """
 
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-        print(f"Loading embedding model: {model_name}")
-        self.model = SentenceTransformer(model_name)
-        self.index = None
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        self.model_name = model_name
+        self.index: Optional[faiss.IndexFlatIP] = None
         self.metadata: List[Dict[str, Any]] = []
+
+        if HAS_ST:
+            # Local/dev: full functionality, load model
+            print(f"Loading embedding model: {model_name}")
+            self.model = SentenceTransformer(self.model_name)
+        else:
+            # Production on Render: no model, only precomputed index
+            print("SentenceTransformer not available. Running in load-only mode.")
+            self.model = None
+
+        self._load_index_and_metadata()
+
+    def _load_index_and_metadata(self) -> None:
+        if not (os.path.exists(INDEX_PATH) and os.path.exists(METADATA_PATH)):
+            raise RuntimeError(
+                f"FAISS index or metadata not found. "
+                f"Expected {INDEX_PATH} and {METADATA_PATH}. "
+                f"Generate them locally with embedder.py and commit to the repo."
+            )
+
+        # Load FAISS index
+        print(f"Loading FAISS index from {INDEX_PATH}")
+        self.index = faiss.read_index(INDEX_PATH)
+
+        # Load metadata
+        with open(METADATA_PATH, "r", encoding="utf-8") as f:
+            self.metadata = json.load(f)
+
+        print(f"Loaded FAISS index with {self.index.ntotal} vectors")
 
     def create_embedding_text(self, assessment: Dict[str, Any]) -> str:
         """
@@ -61,8 +96,14 @@ class Embedder:
 
     def build_index(self, assessments: List[Dict[str, Any]]) -> None:
         """
-        Build a FAISS index from assessments and save it + metadata.
+        Only used locally to build index. Requires sentence-transformers & torch.
         """
+        if not HAS_ST or self.model is None:
+            raise RuntimeError(
+                "SentenceTransformer not available. "
+                "This method is for local use only. Do not call on Render."
+            )
+
         print(f"Building FAISS index for {len(assessments)} assessments...")
 
         texts = [self.create_embedding_text(a) for a in assessments]
@@ -85,10 +126,7 @@ class Embedder:
         self.index = index
         self.metadata = assessments
 
-        self.save_index(INDEX_DIR)
-
-    def save_index(self, index_dir: str) -> None:
-        os.makedirs(index_dir, exist_ok=True)
+        os.makedirs(INDEX_DIR, exist_ok=True)
         faiss.write_index(self.index, INDEX_PATH)
         with open(METADATA_PATH, "w", encoding="utf-8") as f:
             json.dump(self.metadata, f, indent=2, ensure_ascii=False)
@@ -96,36 +134,27 @@ class Embedder:
         print(f"Index saved to {INDEX_PATH}")
         print(f"Metadata saved to {METADATA_PATH}")
 
-    def load_index(self, index_dir: str = INDEX_DIR) -> None:
-        if not os.path.exists(INDEX_PATH) or not os.path.exists(METADATA_PATH):
-            raise FileNotFoundError(
-                f"Index or metadata not found in {index_dir}. "
-                f"Run embedder.py to build the index first."
-            )
-
-        print(f"Loading FAISS index from {INDEX_PATH}")
-        self.index = faiss.read_index(INDEX_PATH)
-
-        with open(METADATA_PATH, "r", encoding="utf-8") as f:
-            self.metadata = json.load(f)
-
-        print(f"Loaded FAISS index with {self.index.ntotal} vectors")
-
-    def search(self, query_text: str, top_k: int = 20) -> List[Dict[str, Any]]:
+    def embed_query(self, query_text: str) -> np.ndarray:
         """
-        Search the index for the most similar assessments to the given query text.
+        Embeds a query text. Only available if SentenceTransformer is loaded.
+        """
+        if not HAS_ST or self.model is None:
+            raise RuntimeError(
+                "Query embedding requested but SentenceTransformer is not available. "
+                "This method is for local use or environments with ST installed."
+            )
+        emb = self.model.encode([query_text], convert_to_numpy=True, normalize_embeddings=True)
+        return emb
+
+    def search(self, query_vector: np.ndarray, top_k: int = 20) -> List[Dict[str, Any]]:
+        """
+        Search the index for the most similar assessments to the given query vector.
         Returns a list of assessments with an added 'score' field.
         """
         if self.index is None:
             raise RuntimeError("FAISS index not loaded. Call load_index() first.")
 
-        query_emb = self.model.encode(
-            [query_text],
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-        )
-
-        scores, indices = self.index.search(query_emb, top_k)
+        scores, indices = self.index.search(query_vector, top_k)
         scores = scores[0]
         indices = indices[0]
 
@@ -143,6 +172,7 @@ class Embedder:
 
 
 if __name__ == "__main__":
+    # This block is for local index building only
     if not os.path.exists(ASSESSMENTS_PATH):
         raise FileNotFoundError(
             f"{ASSESSMENTS_PATH} not found. Run crawler.py first to create it."
