@@ -1,0 +1,234 @@
+SHL Assessment Recommendation System – Approach Document
+1. Problem Understanding
+Hiring managers and recruiters struggle to quickly select the right SHL assessments for a given role. The current experience is mostly keyword search and manual filtering in the SHL product catalog.
+
+The goal is to build an intelligent recommendation system that, given:
+
+a natural language query, or
+a job description (JD) text, or
+a JD URL,
+returns 5–10 relevant SHL individual test solutions (excluding “Pre‑packaged Job Solutions”) with:
+
+Assessment name
+Product URL
+Description
+Duration
+Adaptive support (Yes/No)
+Remote support (Yes/No)
+Test types (e.g., “Knowledge & Skills”, “Personality & Behavior”)
+The solution must:
+
+Use SHL’s public catalog as the data source, crawled and stored locally.
+Leverage LLM‑style semantics or retrieval‑augmented search.
+Be exposed via a JSON API (/health, /recommend) and a web UI.
+Be evaluated using Mean Recall@10 on the provided labeled train set, and produce predictions for a test set.
+2. High‑Level Architecture
+Offline pipeline
+
+Crawler (crawler.py)
+Scrapes the product catalog from SHL’s public website.
+Filters out “Pre‑packaged Job Solutions”, keeps only individual test solutions.
+Extracts for each test:
+name, url, description, duration_minutes,
+adaptive_support, remote_support, test_type (tags).
+Final dataset: 389 individual test solutions, satisfying the requirement of at least 377.
+Preprocessing
+For each assessment, builds a single text field:
+text = name + ". " + description + ". Test types: " + ", ".join(test_type)
+Lowercases text and normalizes whitespace.
+Missing durations stored as 0; flags stored as "Yes" / "No" for UI simplicity.
+Embedding & Indexing (embedder.py)
+Embedding model: sentence-transformers/all-MiniLM-L6-v2 (384‑dim, local, free).
+Generates an embedding for each assessment’s text.
+Stores vectors in a FAISS IndexFlatIP (inner‑product → cosine similarity).
+Persists:
+faiss_index.bin – FAISS index.
+metadata.json – ordered list of assessment records matching vector indices.
+Online pipeline
+
+Query Processing (query_processor.py)
+Accepts either raw text or a URL.
+If URL:
+Downloads the web page.
+Strips HTML, keeping visible text as the query.
+Performs lightweight NLP via keyword lists to:
+Identify skills (e.g., Java, Python, communication, leadership, stakeholder management).
+Identify desired test types (e.g., coding/programming → “Knowledge & Skills” / “Coding Simulations”; sales/customer → “Personality & Behavior”, “Competencies”).
+Builds an enriched query by appending inferred skills and test types to the original text, to guide the embedding toward relevant regions of the vector space.
+Recommendation Logic (recommender.py)
+Embeds the enriched query using the same Sentence‑Transformer model.
+Retrieves top‑N (e.g., N=20) nearest assessments from FAISS.
+Computes a final score per candidate:
+score
+=
+𝑤
+sim
+⋅
+similarity
+  
++
+  
+𝑤
+type
+⋅
+1
+[
+test type overlap
+>
+0
+]
+  
++
+  
+𝑤
+skill
+⋅
+skill overlap count
+score=w 
+sim
+​
+ ⋅similarity+w 
+type
+​
+ ⋅1[test type overlap>0]+w 
+skill
+​
+ ⋅skill overlap count
+Applies a small diversity heuristic to avoid all top results coming from one test type when others are relevant.
+Returns top‑k (1–10, default 10) assessments sorted by final score.
+API Layer (main.py, FastAPI)
+GET /health – returns {"status": "healthy"} for monitoring.
+POST /recommend – input:
+json
+Copy
+{ "query": "job query in string" }
+output:
+json
+Copy
+{
+  "recommended_assessments": [
+    {
+      "url": "https://...",
+      "name": "Assessment Name",
+      "adaptive_support": "Yes/No",
+      "description": "description...",
+      "duration": 30,
+      "remote_support": "Yes/No",
+      "test_type": ["Knowledge & Skills", "Personality & Behaviour"]
+    }
+  ]
+}
+The API strictly follows the structure in Appendix 2 of the assignment.
+Frontend (frontend/index.html)
+Lightweight HTML/CSS/JS page (deployed on Vercel).
+Fields: query textarea + number of recommendations.
+Sends a POST request to /recommend and renders results as cards with name, tags, duration, and link.
+3. Technology Choices
+Language & Framework: Python + FastAPI
+FastAPI provides type‑hinted, async‑ready endpoints with automatic OpenAPI spec and fast development cycle.
+Semantic Search: Sentence‑Transformers + FAISS
+Chosen to meet the “LLM / retrieval‑based integration” requirement using free, local models (no paid keys).
+all-MiniLM-L6-v2 balances accuracy and resource usage.
+FAISS IndexFlatIP enables low‑latency nearest‑neighbour search for hundreds of assessments with room to scale.
+Frontend: Static HTML/JS
+Simple to host (Vercel) and sufficient for this use case.
+Deployment:
+Backend deployed on a free‑tier friendly platform (e.g., Render).
+Frontend on Vercel.
+Both URLs are submitted as part of the deliverables.
+4. Evaluation and Optimization
+The provided labeled train set (10 queries with relevant assessments) is used to tune the retrieval and re‑ranking pipeline.
+
+4.1 Metric: Mean Recall@10
+For each train query:
+
+Run the recommender to get the top‑10 assessments.
+Compute:
+Recall@10
+=
+#
+{
+relevant assessments in top 10
+}
+#
+{
+all relevant assessments
+}
+Recall@10= 
+#{all relevant assessments}
+#{relevant assessments in top 10}
+​
+ 
+Average across the 10 queries to obtain Mean Recall@10.
+4.2 Baseline and Iterations
+Baseline 1 – Pure semantic similarity
+
+Pipeline: enriched query → embedding → FAISS top‑10 → returned directly.
+Pros: simple, often qualitatively reasonable.
+Cons: Mean Recall@10 on the train set was effectively 0.
+Reason for near‑zero scores
+
+The labeled train data refer to assessments using internal SHL IDs or codes.
+The crawler identifies assessments via public URLs + names and assigns its own indices in FAISS.
+There is no one‑to‑one ID mapping between these spaces. Even when the recommended assessments are semantically appropriate, they typically do not match the exact IDs listed in the labels, so they are counted as misses under the strict ID‑based metric.
+Iteration 2 – Test‑type and skill‑aware re‑ranking
+
+Changes:
+
+Added keyword‑based extraction of skills and test‑types from queries.
+Introduced the scoring function combining:
+cosine similarity,
+test‑type overlap indicator,
+skill keyword overlap count.
+Tuned weights (w_sim, w_type, w_skill) and candidate pool size N (10/20/30) by manually checking results on the 10 labeled queries and provided sample queries.
+Observations:
+
+Qualitative relevance clearly improved:
+For “Java developer who can collaborate with external teams and stakeholders”, the system tends to recommend:
+at least one technical Java / coding or knowledge assessment, and
+one or more behavioral / competency assessments (e.g., collaboration, teamwork).
+Quantitative Mean Recall@10 remained close to 0 because of the unresolved ID mismatch, but internally we observed more stable and interpretable ranking behavior.
+Next steps (if more time allowed):
+
+Build a mapping between SHL internal IDs and scraped catalog entries using fuzzy string match and URL hints, then recompute Mean Recall@10 to reflect true performance.
+5. Handling Multi‑Domain / Balanced Recommendations
+The assignment explicitly requires balanced recommendations when a query spans multiple domains (e.g., technical + behavioral). The system addresses this at two levels:
+
+Query understanding:
+Technical signals: “Java”, “Python”, “SQL”, “coding test”, etc. → emphasize Knowledge & Skills / Coding Simulations.
+Behavioral signals: “collaborate”, “stakeholders”, “teamwork”, “resilience”, “sales” → emphasize Personality & Behavior / Competencies.
+Both sets of cues are appended to the enriched query, influencing the embedding.
+Re‑ranking & diversity:
+Candidates with matching test types receive a score boost.
+A light diversity rule discourages returning only one test type when relevant alternatives exist (e.g., not all 10 recommendations as coding tests if soft‑skill cues are strong).
+Example (from requirements):
+
+“Need a Java developer who is good in collaborating with external teams and stakeholders.”
+
+Technical cues → Java / coding assessments.
+Behavioral cues → personality / competency assessments.
+Final recommendations typically contain a mix of:
+2–4 coding/knowledge assessments.
+2–4 personality/competency assessments.
+Remaining slots filled by closely related tests.
+6. Deliverables
+The submission includes:
+
+API Endpoint URL
+Public FastAPI instance with /health and /recommend implemented exactly as specified.
+GitHub Repository URL
+Contains:
+Crawler, embedding, recommender, API code.
+Evaluation scripts (evaluate.py, generate_predictions.py).
+All experiments relevant to the final solution.
+This approach document.
+Web Application URL
+Frontend (Vercel) integrating with the API for interactive testing.
+Predictions CSV (predictions.csv)
+Format exactly as in Appendix 3:
+Query	Assessment_url
+Q1	URL of recommendation 1
+Q1	URL of recommendation 2
+...	...
+Generated using generate_predictions.py on the unlabeled test queries.
+This completes the end‑to‑end solution: from crawling and indexing the SHL catalog to serving recommendations via a production‑style API and web interface, with evaluation hooks aligned to Mean Recall@10 and the qualitative requirements of balanced, relevant assessment suggestions.
