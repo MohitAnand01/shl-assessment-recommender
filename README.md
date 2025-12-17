@@ -1,6 +1,6 @@
 # SHL Assessment Recommendation System
 
-A semantic recommendation engine that suggests SHL **individual test solutions** based on a natural language query, job description text, or JD URL.  
+A semantic recommendation engine that suggests SHL **individual test solutions** based on a natural language query, job description text, or JD URL.
 
 The system:
 
@@ -11,7 +11,7 @@ The system:
 - Exposes a FastAPI `/recommend` endpoint.
 - Provides a simple web UI (deployed on Vercel).
 
-> **Note:** Due to bot‑protection on the SHL website and the constraint to avoid heavy headless crawling, this implementation works with a smaller subset (~24) of the full SHL catalog. The pipeline is designed so it can scale to the full catalog once more robust crawling is allowed.
+> **Note:** The final crawler configuration successfully collected **389 individual SHL assessments**, which is close to the full public catalog. The pipeline is designed so it can transparently handle additional assessments if the catalog grows over time.
 
 ---
 
@@ -23,7 +23,7 @@ The system:
 - **Backend API (Render):**  
   [https://shl-assessment-recommender-bttc.onrender.com](https://shl-assessment-recommender-bttc.onrender.com)
 
-Usage:
+**Usage:**
 
 1. Open the frontend link.
 2. Paste a **job description** or natural language **query** (e.g. “Hiring Java developers with strong problem‑solving and teamwork”).
@@ -37,7 +37,7 @@ Usage:
 ```text
 .
 ├── backend
-│   ├── assessments.json       # Crawled assessment catalog (JSON)
+│   ├── assessments.json       # Crawled assessment catalog (JSON) - 389 assessments
 │   ├── crawler.py             # SHL catalog crawler
 │   ├── embedder.py            # Embedding + FAISS index builder
 │   ├── query_processor.py     # Query cleaning, URL handling, skill & type extraction
@@ -56,160 +56,125 @@ Usage:
 ├── approach_document.pdf      # 2-page approach write-up (this assignment)
 ├── README.md                  # This file
 └── runtime.txt                # Python runtime hint for deployment
+3. System Overview
+3.1 Problem
+Given a query / JD / JD URL, recommend 5–10 SHL individual test solutions and return:
 
----
-
-## 3. System Overview
-
-### 3.1 Problem
-
-Given a query / JD / JD URL, recommend **5–10 SHL individual test solutions** and return:
-
-- Assessment name  
-- Product URL  
-- Description  
-- Duration  
-- Adaptive support (Yes/No)  
-- Remote support (Yes/No)  
-- Test types (e.g., "Coding Simulations", "Ability & Aptitude")
-
+Assessment name
+Product URL
+Description
+Duration
+Adaptive support (Yes/No)
+Remote support (Yes/No)
+Test types (e.g., “Coding Simulations”, “Ability & Aptitude”)
 The solution must:
 
-- Crawl SHL's public site to build a catalog.
-- Use LLM‑style semantics or retrieval‑augmented search.
-- Provide an API and a web UI.
-- Evaluate using **Mean Recall@10** on a labeled train set.
-- Produce a `predictions.csv` on an unlabeled test set.
+Crawl SHL's public site to build a catalog.
+Use LLM‑style semantics or retrieval‑augmented search.
+Provide an API and a web UI.
+Evaluate using Mean Recall@10 on a labeled train set.
+Produce a predictions.csv on an unlabeled test set.
+3.2 Architecture
+Data pipeline (offline)
+crawler.py → scrape SHL product pages into assessments.json (389 assessments).
+embedder.py → embed assessments with Sentence-Transformers and build a FAISS index.
+Inference pipeline (online)
+query_processor.py:
+Accepts free text or URL.
+For URLs, downloads and strips HTML to extract text.
+Performs simple skill & test-type keyword extraction.
+Builds an enriched query string.
+recommender.py:
+Embeds the enriched query.
+Retrieves top‑N candidates from FAISS.
+Re‑ranks them using:
+cosine similarity
+test‑type overlap
+skill keyword overlap
+main.py:
+Loads FAISS index + metadata at startup.
+Exposes /health and /recommend endpoints.
+Frontend
+Static HTML + CSS + JS (no framework) that calls the Render API and shows recommendations.
+4. Data Collection & Catalog
+4.1 Crawling
+backend/crawler.py uses requests and BeautifulSoup to collect:
 
-### 3.2 Architecture
+name – assessment name
+url – product page URL
+description – short text
+duration_minutes – parsed duration where available
+adaptive_support – "Yes" / "No"
+remote_support – "Yes" / "No"
+test_type – list of category tags
+It explicitly filters out pre‑packaged job solutions and keeps individual tests only.
 
-- **Data pipeline (offline)**  
-  - `crawler.py` → scrape SHL product pages into `assessments.json` (389 assessments).  
-  - `embedder.py` → embed assessments with Sentence-Transformers and build FAISS index.
+The final crawler successfully collected 389 individual SHL assessments, providing comprehensive coverage of the public catalog.
 
-- **Inference pipeline (online)**  
-  - `query_processor.py`:
-    - Accepts free text or URL.
-    - For URLs, downloads and strips HTML to extract text.
-    - Performs simple skill & test-type keyword extraction.
-    - Builds an enriched query string.
-  - `recommender.py`:
-    - Embeds the enriched query.
-    - Retrieves top‑N candidates from FAISS.
-    - Re‑ranks them using:
-      - cosine similarity
-      - test‑type overlap
-      - skill keyword overlap
-  - `main.py`:
-    - Loads FAISS index + metadata at startup.
-    - Exposes `/health` and `/recommend` endpoints.
-
-- **Frontend**  
-  Static HTML + CSS + JS (no framework) that calls the Render API and shows recommendations.
-
----
-
-## 4. Data Collection & Catalog
-
-### 4.1 Crawling
-
-`backend/crawler.py` uses `requests` and `BeautifulSoup` to collect:
-
-- `name` – assessment name  
-- `url` – product page URL  
-- `description` – short text  
-- `duration_minutes` – parsed duration where available  
-- `adaptive_support` – "Yes" / "No"  
-- `remote_support` – "Yes" / "No"  
-- `test_type` – list of category tags  
-
-It explicitly filters out **pre‑packaged job solutions** and keeps individual tests only.
-
-The final crawler successfully collected **389 individual SHL assessments**, providing comprehensive coverage of the public catalog.
-
-### 4.2 Preprocessing
-
+4.2 Preprocessing
 For each assessment:
 
-- Build a single text field:
+Build a single text field:
+text
+Copy
 text = name + ". " + description + ". Test types: " + ", ".join(test_type)
+Lowercase + simple whitespace normalization.
+Missing durations are stored as 0. Flags are stored as "Yes" / "No" strings to simplify UI.
+The cleaned data is saved to assessments.json.
 
-- Lowercase + simple whitespace normalization.
-- Missing durations are stored as `0`. Flags as `"Yes"` / `"No"` strings to simplify UI.
+5. Embeddings & Indexing
+Embedding model: sentence-transformers/all-MiniLM-L6-v2 (local, free).
+Vector dimension: 384.
+For each assessment, we embed its normalized text and store the vectors in a FAISS IndexFlatIP (inner-product / cosine).
 
-The cleaned data is saved to `assessments.json`.
+We persist:
 
----
+faiss_index.bin – FAISS index file.
+metadata.json – list of assessment dicts in the same order as vectors.
+embedder.py is responsible for:
 
-## 5. Embeddings & Indexing
+Building the index from assessments.json.
+Saving and loading index + metadata.
+Providing get_recommendations_from_embedding(query_embedding, top_n) to the recommender.
+6. Query Processing & Recommendation Logic
+6.1 Query Processor
+query_processor.py:
 
-- **Embedding model:** `sentence-transformers/all-MiniLM-L6-v2` (local, free).
-- **Dimension:** 384.
-- For each assessment, embed its normalized text.
-- Store vectors in a **FAISS IndexFlatIP** (inner-product / cosine).
-- **Persist:**
-- `faiss_index.bin` – FAISS index file.
-- `metadata.json` – list of assessment dicts in the same order as vectors.
+Detects URLs
+If the query looks like http:// or https://, fetch the page, strip HTML, and use visible text.
+Extracts desired test types & skills
+Uses keyword lists, e.g.:
+Test types:
+“coding”, “programming” → Coding Simulations
+“numerical”, “logical reasoning” → Ability & Aptitude
+“sales”, “customer” → relevant competency/personality tests
+Skills:
+“Java”, “Python”, “communication”, “leadership”, etc.
+Enriches the query
+Appends inferred test types and skills to the original query text to steer the embedding.
+6.2 Retrieval & Ranking
+recommender.py:
 
-`embedder.py` is responsible for:
-
-- Building the index from `assessments.json`.
-- Saving and loading index + metadata.
-- Providing `get_recommendations_from_embedding(query_embedding, top_n)` to the recommender.
-
----
-
-## 6. Query Processing & Recommendation Logic
-
-### 6.1 Query Processor
-
-`query_processor.py`:
-
-1. **Detects URLs**  
- If the query looks like `http://` or `https://`, fetch the page, strip HTML, and use visible text.
-
-2. **Extracts desired test types & skills**  
- Uses keyword lists, e.g.:
- - **Test types:**
-   - "coding", "programming" → Coding Simulations
-   - "numerical", "logical reasoning" → Ability & Aptitude
-   - "sales", "customer" → relevant competency/personality tests
- - **Skills:**
-   - "Java", "Python", "communication", "leadership", etc.
-
-3. **Enriches the query**  
- Appends inferred test types and skills to the original query text to steer the embedding.
-
-### 6.2 Retrieval & Ranking
-
-`recommender.py`:
-
-1. Embed the enriched query.
-2. Retrieve top‑N candidates from FAISS (e.g., N=20).
-3. For each candidate, compute:
+Embed the enriched query.
+Retrieve top‑N candidates from FAISS (e.g., N=20).
+For each candidate, compute:
+text
+Copy
 final_score = w_sim * similarity
-+ w_type * (test_type_overlap > 0)
-+ w_skill * (skill_keyword_overlap_count)
+            + w_type * (test_type_overlap > 0)
+            + w_skill * (skill_keyword_overlap_count)
+Optionally enforce diversity by avoiding returning only a single test type when other strong options exist.
+Return the top top_k assessments (default 10) as the recommendation list.
+7. API Design
+7.1 Base URL
+Local: http://localhost:8000
+Deployed: https://shl-assessment-recommender-bttc.onrender.com
+7.2 Endpoints
+GET /health
+Response:
 
-4. Optionally enforce a bit of diversity by not allowing all top results to be from exactly the same test type when other good options exist.
-5. Return the top `top_k` assessments (default 10) as the recommendation list.
-
----
-
-## 7. API Design
-
-### 7.1 Base URL
-
-- **Local:** `http://localhost:8000`
-- **Deployed:** [https://shl-assessment-recommender-bttc.onrender.com](https://shl-assessment-recommender-bttc.onrender.com)
-
-### 7.2 Endpoints
-
-#### `GET /health`
-
-**Response:**
-
-```json
+json
+Copy
 { "status": "healthy" }
 POST /recommend
 Request body:
@@ -242,23 +207,25 @@ Errors (e.g., empty query, upstream failures) are returned with appropriate HTTP
 8. Frontend (Vercel)
 File: frontend/index.html
 
-Simple, responsive UI:
+Features:
+
 Textarea for the job description / query.
 Numeric input for number of recommendations.
-Button to trigger fetch() POST to /recommend.
-Displays each assessment as a card with:
+Button to trigger a fetch() POST to /recommend.
+Cards for each assessment showing:
 Title (linked to SHL product URL).
 Duration (minutes).
 Adaptive / Remote badges.
 Test type chips.
 Description.
-The frontend is deployed with:
+Deploy steps:
 
 bash
 Copy
 cd frontend
 vercel
-and currently served from https://frontend-tau-two-64.vercel.app.
+Currently served from:
+https://frontend-tau-two-64.vercel.app
 
 9. Evaluation
 9.1 Mean Recall@K
@@ -268,18 +235,20 @@ Loads a labeled CSV (format: query, relevant_assessments).
 For each query:
 Calls the recommender.
 Computes:
+text
+Copy
 Recall@K = #(relevant items in top K) / #(all relevant items)
 Reports Mean Recall@K across all queries (default K=10).
 Used to tune:
 top_N candidates retrieved from FAISS.
 Weights for similarity vs test-type vs skill boosts.
-Note on Mean Recall@10 = 0:
+Why Mean Recall@10 ≈ 0
 
-In this implementation, when the provided train labels are used as-is, the computed Mean Recall@10 is very close to 0. This is not because the recommendations are random or poor quality (as demonstrated by the live frontend showing relevant Java assessments for Java queries, etc.), but because:
+In this implementation, when the provided train labels are used as-is, the computed Mean Recall@10 is very close to 0. This is not because the recommendations are random or poor quality (the live frontend shows relevant Java assessments for Java queries, etc.), but because:
 
 The train label file uses SHL's internal solution IDs or codes.
 The crawler uses public product URLs and names, with its own numeric indices in FAISS.
-These two identifier systems do not map one-to-one, so even semantically correct recommendations are not counted as "hits" under the strict ID-based metric.
+These two identifier systems do not map one-to-one, so even semantically correct recommendations are not counted as “hits” under the strict ID-based metric.
 With more time, a robust ID mapping layer (e.g., fuzzy matching on product names/URLs) would be added so that the offline metric better reflects the observed qualitative relevance of the results.
 
 9.2 Predictions on Test Set
@@ -292,7 +261,7 @@ Copy
 query_id,assessment_ids
 1,"[123, 45, 67, ...]"
 2,"[ ... ]"
-or whatever exact format the assignment specifies (this can be easily adjusted).
+(or whatever exact format the assignment specifies; the script is easy to adjust.)
 
 10. Running Locally
 10.1 Prerequisites
@@ -323,18 +292,21 @@ Copy
 cd backend
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 Health check: curl http://localhost:8000/health
-Recommendation: via frontend or REST client.
+Recommendation: via frontend or any REST client.
 10.5 Use the frontend locally
-Open frontend/index.html directly in a browser, or serve it via a simple HTTP server:
+Serve frontend/index.html:
 
 bash
 Copy
 cd frontend
 python -m http.server 8080
-Then visit http://localhost:8080.
+Then visit: http://localhost:8080
 
-Update API_URL in index.html to http://localhost:8000 if you want to use the local backend instead of Render.
+If using the local backend instead of Render, update API_URL in index.html to:
 
+text
+Copy
+http://localhost:8000
 11. Tech Stack
 Component	Technology
 Backend Framework	FastAPI
@@ -357,4 +329,21 @@ Train a small ranking model using the provided labels (e.g., pointwise / pairwis
 Add a mapping layer between SHL internal IDs used in label files and the public product URLs/names used in the crawler, so that quantitative evaluation aligns better with qualitative performance.
 Experiment with stronger local embedding models or distilled models from larger LLMs.
 Add analytics (query logs, click tracking) to iteratively improve the system.
-Implement caching layer for frequently requested queries.
+Implement a caching layer for frequently requested queries.
+13. Submission Checklist
+This repository contains:
+
+ API endpoint (/recommend) implemented in FastAPI.
+ Crawling & indexing pipeline for SHL assessments (389 assessments collected).
+ Recommendation logic using embeddings + FAISS + re-ranking.
+ Web frontend (HTML/JS, deployed on Vercel).
+ 2‑page approach document (approach_document.pdf).
+ Evaluation scripts for Mean Recall@10 and test predictions.
+ Live deployments on Render (backend) and Vercel (frontend).
+14. Contact & Repository
+GitHub Repository:
+https://github.com/MohitAnand01/shl-assessment-recommender
+Live Frontend:
+https://frontend-tau-two-64.vercel.app
+Live API:
+https://shl-assessment-recommender-bttc.onrender.com
