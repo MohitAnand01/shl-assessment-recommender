@@ -1,8 +1,14 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-sentence-transformers==2.2.2
+
+# Use newer sentence-transformers that works with modern huggingface_hub
+sentence-transformers==3.0.1
+
 faiss-cpu==1.13.1
 beautifulsoup4==4.12.2
 requests==2.31.0
-# lxml==4.9.3          # not needed on Render (only for crawler, already run locally)
-# pandas==2.1.3        # not needed on Render (only for evaluation, run locally)
+
+# DO NOT pin huggingface_hub here; let sentence-transformers choose
+# huggingface-hub
+# lxml
+# pandas
