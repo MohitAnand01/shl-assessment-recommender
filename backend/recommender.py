@@ -1,6 +1,6 @@
 from typing import List, Dict, Any
 
-from embedder import Embedder
+from embedder import Embedder, HAS_ST
 from query_processor import QueryProcessor
 
 
@@ -8,7 +8,7 @@ class Recommender:
     """
     Uses:
       - QueryProcessor to understand the query
-      - Embedder to get initial candidates
+      - Embedder to get initial candidates (FAISS if available, keyword fallback otherwise)
       - A re-ranking stage to:
           * boost skill matches
           * boost test type matches
@@ -32,10 +32,21 @@ class Recommender:
         extracted_test_types: List[str] = signals["extracted_test_types"]
         max_duration_minutes = signals["max_duration_minutes"]
 
-        # 1) Initial retrieval from FAISS with an oversampled pool
-        candidates = self.embedder.search(
-            enhanced_query, top_k=self.candidate_pool_size
-        )
+        # 1) Initial retrieval
+        if HAS_ST:
+            # Local environment: use semantic FAISS search
+            query_vector = self.embedder.embed_query(enhanced_query)
+            candidates = self.embedder.search(
+                query_vector, top_k=self.candidate_pool_size
+            )
+        else:
+            # Render environment (no ST): use keyword-based fallback
+            candidates = self._keyword_search(
+                enhanced_query, 
+                extracted_skills, 
+                extracted_test_types,
+                top_k=self.candidate_pool_size
+            )
 
         # 2) Re-ranking
         reranked: List[Dict[str, Any]] = []
@@ -82,7 +93,55 @@ class Recommender:
         # 4) Take top_k and strip internal scoring fields
         final: List[Dict[str, Any]] = []
         for item in reranked[:top_k]:
-            item.pop("rerank_score", None)
+            # Optionally keep score for debugging
+            item["score"] = item.pop("rerank_score", 0.0)
             final.append(item)
 
         return final
+
+    def _keyword_search(
+        self, 
+        query: str, 
+        skills: List[str], 
+        test_types: List[str],
+        top_k: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Simple keyword-based scoring fallback for environments without SentenceTransformer.
+        Scores assessments based on keyword matches in name and description.
+        """
+        query_lower = query.lower()
+        query_words = set(query_lower.split())
+        
+        scored_assessments = []
+        
+        for assessment in self.embedder.metadata:
+            name = (assessment.get("name") or "").lower()
+            desc = (assessment.get("description") or "").lower()
+            test_type_list = [t.lower() for t in assessment.get("test_type", [])]
+            
+            # Base score: count matching words
+            name_words = set(name.split())
+            desc_words = set(desc.split())
+            
+            word_matches = len(query_words & (name_words | desc_words))
+            score = float(word_matches)
+            
+            # Boost for skill matches
+            for skill in skills:
+                if skill.lower() in name or skill.lower() in desc:
+                    score += 2.0
+            
+            # Boost for test type matches
+            for tt in test_types:
+                if any(tt.lower() in test_t for test_t in test_type_list):
+                    score += 3.0
+            
+            if score > 0:
+                assessment_copy = dict(assessment)
+                assessment_copy["score"] = score
+                scored_assessments.append(assessment_copy)
+        
+        # Sort by score and return top_k
+        scored_assessments.sort(key=lambda x: x["score"], reverse=True)
+        return scored_assessments[:top_k]
