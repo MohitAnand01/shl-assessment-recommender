@@ -1,14 +1,13 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
-# Use newer sentence-transformers that works with modern huggingface_hub
+# Embeddings
 sentence-transformers==3.0.1
+
+# Force CPU-only PyTorch to avoid huge CUDA libs
+torch==2.3.1
+torchvision==0.18.1
 
 faiss-cpu==1.13.1
 beautifulsoup4==4.12.2
 requests==2.31.0
-
-# DO NOT pin huggingface_hub here; let sentence-transformers choose
-# huggingface-hub
-# lxml
-# pandas
